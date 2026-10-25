@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Todo Timer</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1d2433;
+    --muted: #6b7385;
+    --border: #e3e6ec;
+    --accent: #2f6fed;
+    --accent-dark: #2459c7;
+    --run: #12a150;
+    --run-soft: #e7f7ee;
+    --danger: #d93b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10131a;
+      --card: #191d27;
+      --text: #e6e9f0;
+      --muted: #8f97a8;
+      --border: #2a303d;
+      --run-soft: #12301f;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 32px 16px 48px;
+  }
+  main { max-width: 620px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 1.7rem; }
+  .total { color: var(--muted); font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+  .total strong { color: var(--text); }
+
+  form { display: flex; gap: 8px; }
+  input[type="text"] {
+    flex: 1; min-width: 0;
+    font: inherit; color: var(--text); background: var(--card);
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+  }
+  input[type="text"]:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    border: none; border-radius: 10px; padding: 0 18px;
+    background: var(--accent); color: #fff;
+  }
+  button:hover:not(:disabled) { background: var(--accent-dark); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: var(--danger); font-size: 0.9rem; min-height: 1.4em; margin: 8px 0 12px; }
+
+  ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  li.todo {
+    display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  }
+  li.todo.running { border-color: var(--run); background: var(--run-soft); }
+  li.todo.done .title { text-decoration: line-through; color: var(--muted); }
+  .check { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+  .info { min-width: 0; }
+  .title { font-weight: 500; word-break: break-word; }
+  .clock { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  li.todo.running .clock { color: var(--run); font-weight: 600; }
+  .actions { display: flex; gap: 6px; }
+  .actions button { padding: 8px 12px; font-size: 0.85rem; }
+  .btn-run { background: var(--run); }
+  .btn-run:hover:not(:disabled) { background: #0e8541; }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover:not(:disabled) { background: var(--border); color: var(--text); }
+  .btn-del:hover:not(:disabled) { color: var(--danger); }
+  .empty { color: var(--muted); text-align: center; padding: 28px 0; }
+
+  @media (max-width: 480px) {
+    li.todo { grid-template-columns: auto 1fr; }
+    .actions { grid-column: 1 / -1; justify-content: flex-end; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Todo Timer</h1>
+    <div class="total">Total tracked: <strong id="total">0:00:00</strong></div>
+  </header>
+
+  <form id="addForm">
+    <input type="text" id="title" placeholder="What are you working on?" maxlength="200" autocomplete="off" required>
+    <button type="submit" id="addBtn">Add</button>
+  </form>
+  <div class="error" id="error"></div>
+
+  <ul id="list"><li class="empty">Loading…</li></ul>
+</main>
+
+<script>
+  // Same-origin by default. If the frontend is hosted separately, set this to the server URL.
+  const API_BASE = "";
+  const API = API_BASE + "https://todo-timer-api.deployinn.com/api/todos";
+
+  const listEl = document.getElementById("list");
+  const errorEl = document.getElementById("error");
+  const form = document.getElementById("addForm");
+  const titleEl = document.getElementById("title");
+  const addBtn = document.getElementById("addBtn");
+  const totalEl = document.getElementById("total");
+
+  let todos = [];
+  let loadedAt = Date.now(); // elapsed_seconds from the server is relative to this moment
+
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600);
+    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+    const s = String(sec % 60).padStart(2, "0");
+    return `${h}:${m}:${s}`;
+  }
+
+  function liveSeconds(t) {
+    const base = Number(t.elapsed_seconds) || 0;
+    return t.running ? base + (Date.now() - loadedAt) / 1000 : base;
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(API + path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    if (res.status === 204) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  }
+
+  function showError(err) {
+    errorEl.textContent = err ? err.message || String(err) : "";
+  }
+
+  function button(label, className, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.className = className;
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await onClick(); showError(null); }
+      catch (e) { showError(e); }
+      finally { b.disabled = false; }
+    });
+    return b;
+  }
+
+  function render() {
+    listEl.innerHTML = "";
+    if (!todos.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "No todos yet. Add one and start its timer.";
+      listEl.appendChild(li);
+      tick();
+      return;
+    }
+
+    todos.forEach((t) => {
+      const li = document.createElement("li");
+      li.className = "todo" + (t.running ? " running" : "") + (t.done ? " done" : "");
+
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "check";
+      check.checked = t.done;
+      check.title = t.done ? "Mark as not done" : "Mark as done";
+      check.addEventListener("change", async () => {
+        try { await api(`/${t.id}`, { method: "PATCH", body: JSON.stringify({ done: check.checked }) }); await load(); }
+        catch (e) { showError(e); check.checked = !check.checked; }
+      });
+
+      const info = document.createElement("div");
+      info.className = "info";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = t.title;
+      const clock = document.createElement("div");
+      clock.className = "clock";
+      clock.dataset.id = t.id;
+      clock.textContent = (t.running ? "● " : "") + fmt(liveSeconds(t));
+      info.append(title, clock);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      if (t.running) {
+        actions.append(button("Stop", "btn-run", async () => { await api(`/${t.id}/stop`, { method: "POST" }); await load(); }));
+      } else {
+        actions.append(button("Start", "btn-run", async () => { await api(`/${t.id}/start`, { method: "POST" }); await load(); }));
+      }
+      actions.append(
+        button("Reset", "btn-ghost", async () => {
+          if (!confirm(`Reset tracked time for "${t.title}"?`)) return;
+          await api(`/${t.id}/reset`, { method: "POST" }); await load();
+        }),
+        button("✕", "btn-ghost btn-del", async () => {
+          if (!confirm(`Delete "${t.title}"?`)) return;
+          await api(`/${t.id}`, { method: "DELETE" }); await load();
+        })
+      );
+
+      li.append(check, info, actions);
+      listEl.appendChild(li);
+    });
+    tick();
+  }
+
+  // Updates the running clocks every second without refetching
+  function tick() {
+    let total = 0;
+    todos.forEach((t) => {
+      const sec = liveSeconds(t);
+      total += sec;
+      const el = listEl.querySelector(`.clock[data-id="${t.id}"]`);
+      if (el) el.textContent = (t.running ? "● " : "") + fmt(sec);
+    });
+    totalEl.textContent = fmt(total);
+    const running = todos.find((t) => t.running);
+    document.title = running ? `${fmt(liveSeconds(running))} · ${running.title}` : "Todo Timer";
+  }
+
+  async function load() {
+    try {
+      todos = await api("");
+      loadedAt = Date.now();
+      render();
+    } catch (e) {
+      listEl.innerHTML = "";
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Couldn't load todos: " + e.message;
+      listEl.appendChild(li);
+    }
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = titleEl.value.trim();
+    if (!title) return;
+    addBtn.disabled = true;
+    try {
+      await api("", { method: "POST", body: JSON.stringify({ title }) });
+      form.reset();
+      showError(null);
+      await load();
+    } catch (err) {
+      showError(err);
+    } finally {
+      addBtn.disabled = false;
+      titleEl.focus();
+    }
+  });
+
+  setInterval(tick, 1000);
+  // Resync with the server when the tab comes back into view
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+
+  load();
+</script>
+</body>
+</html>
